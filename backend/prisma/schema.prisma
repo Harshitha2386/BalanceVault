@@ -1,0 +1,207 @@
+// BalanceVault database schema (Prisma 6)
+// Constraints Prisma cannot express (CHECKs, triggers, partial indexes, DB roles)
+// are added in a hand-written SQL migration in the next part.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------- Enums ----------
+
+enum Role {
+  ACCOUNT_HOLDER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AccountKind {
+  CUSTOMER
+  SYSTEM
+}
+
+enum AccountStatus {
+  ACTIVE
+  FROZEN
+  CLOSED
+}
+
+enum LedgerTransactionType {
+  TRANSFER
+  FUNDING
+  REVERSAL
+}
+
+enum EntryDirection {
+  DEBIT
+  CREDIT
+}
+
+enum AuditOutcome {
+  SUCCESS
+  DENIED
+  FAILURE
+}
+
+// ---------- Identity ----------
+
+model User {
+  id                 String     @id @default(uuid()) @db.Uuid
+  email              String     @unique // stored lowercase; enforced in app + DB CHECK
+  fullName           String
+  passwordHash       String
+  role               Role       @default(ACCOUNT_HOLDER)
+  status             UserStatus @default(ACTIVE)
+  mustChangePassword Boolean    @default(false)
+  failedLoginCount   Int        @default(0)
+  lockedUntil        DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  sessions             Session[]
+  applications         OnboardingApplication[] @relation("Applicant")
+  reviewedApplications OnboardingApplication[] @relation("Reviewer")
+  account              Account?
+  createdTransactions  LedgerTransaction[]
+  auditLogs            AuditLog[]
+  idempotencyRecords   IdempotencyRecord[]
+}
+
+model Session {
+  id         String    @id @default(uuid()) @db.Uuid
+  tokenHash  String    @unique // SHA-256 of the cookie token; the raw token is never stored
+  userId     String    @db.Uuid
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ---------- Onboarding ----------
+
+model OnboardingApplication {
+  id           String            @id @default(uuid()) @db.Uuid
+  userId       String            @db.Uuid
+  user         User              @relation("Applicant", fields: [userId], references: [id])
+  status       ApplicationStatus @default(PENDING)
+  legalName    String
+  dateOfBirth  DateTime          @db.Date
+  phone        String
+  addressLine  String
+  city         String
+  country      String            @db.Char(2)
+  reviewedById String?           @db.Uuid
+  reviewedBy   User?             @relation("Reviewer", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+  reviewNote   String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([userId])
+  @@index([status, createdAt])
+}
+
+// ---------- Accounts and ledger ----------
+
+model Account {
+  id            String        @id @default(uuid()) @db.Uuid
+  accountNumber String        @unique
+  kind          AccountKind   @default(CUSTOMER)
+  status        AccountStatus @default(ACTIVE)
+  currency      String        @default("INR") @db.Char(3)
+  // CACHE of (sum of credits - sum of debits) in minor units (paise).
+  // The ledger entries are the source of truth.
+  balanceMinor  BigInt        @default(0)
+  ownerId       String?       @unique @db.Uuid // one account per user (simplification); null for SYSTEM accounts
+  owner         User?         @relation(fields: [ownerId], references: [id])
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  entries LedgerEntry[]
+}
+
+model LedgerTransaction {
+  id          String                @id @default(uuid()) @db.Uuid
+  reference   String                @unique
+  type        LedgerTransactionType
+  description String?
+  createdById String?               @db.Uuid
+  createdBy   User?                 @relation(fields: [createdById], references: [id])
+  reversesId  String?               @unique @db.Uuid
+  reverses    LedgerTransaction?    @relation("Reversal", fields: [reversesId], references: [id])
+  reversedBy  LedgerTransaction?    @relation("Reversal")
+  createdAt   DateTime              @default(now())
+
+  entries           LedgerEntry[]
+  idempotencyRecord IdempotencyRecord?
+
+  @@index([createdAt])
+}
+
+model LedgerEntry {
+  id            BigInt            @id @default(autoincrement())
+  transactionId String            @db.Uuid
+  transaction   LedgerTransaction @relation(fields: [transactionId], references: [id])
+  accountId     String            @db.Uuid
+  account       Account           @relation(fields: [accountId], references: [id])
+  direction     EntryDirection
+  amountMinor   BigInt // always > 0 (CHECK added in SQL migration); direction carries the sign
+  createdAt     DateTime          @default(now())
+
+  @@index([accountId, id])
+  @@index([transactionId])
+}
+
+model IdempotencyRecord {
+  id            String            @id @default(uuid()) @db.Uuid
+  userId        String            @db.Uuid
+  user          User              @relation(fields: [userId], references: [id])
+  key           String
+  requestHash   String // hash of the request body; same key + different body => conflict
+  transactionId String            @unique @db.Uuid
+  transaction   LedgerTransaction @relation(fields: [transactionId], references: [id])
+  createdAt     DateTime          @default(now())
+
+  @@unique([userId, key])
+}
+
+// ---------- Audit ----------
+
+model AuditLog {
+  id         BigInt       @id @default(autoincrement())
+  actorId    String?      @db.Uuid // null for anonymous events (e.g. failed login for unknown email)
+  actor      User?        @relation(fields: [actorId], references: [id])
+  action     String
+  targetType String?
+  targetId   String?
+  outcome    AuditOutcome
+  requestId  String
+  ipAddress  String?
+  metadata   Json? // allowlisted, non-sensitive fields only
+  createdAt  DateTime     @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+  @@index([targetType, targetId])
+}
