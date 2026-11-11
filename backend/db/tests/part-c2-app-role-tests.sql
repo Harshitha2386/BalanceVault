@@ -243,7 +243,7 @@ BEGIN
 END
 $test$;
 
-\echo '=== T12 trigger inventory: EXPECT 8 non-internal triggers, all ALWAYS enabled ==='
+\echo '=== T12 trigger inventory: EXPECT the exact 9 ledger triggers, all ALWAYS enabled ==='
 SELECT c.relname AS table_name, t.tgname AS trigger_name, t.tgenabled
 FROM pg_trigger AS t
 JOIN pg_class AS c ON c.oid = t.tgrelid
@@ -257,9 +257,23 @@ DO $test$
 DECLARE
   v_trigger_count bigint;
   v_all_always_enabled boolean;
+  v_trigger_names text[];
+  v_expected_trigger_names text[] := ARRAY[
+    'LedgerEntry_append_only_row',
+    'LedgerEntry_append_only_truncate',
+    'LedgerEntry_balance_cache',
+    'LedgerEntry_balanced',
+    'LedgerEntry_posting_window',
+    'LedgerTransaction_append_only_row',
+    'LedgerTransaction_append_only_truncate',
+    'LedgerTransaction_has_entries',
+    'LedgerTransaction_stamp_posting_txid'
+  ];
 BEGIN
-  SELECT count(*), COALESCE(bool_and(t.tgenabled = 'A'), false)
-    INTO v_trigger_count, v_all_always_enabled
+  SELECT count(*),
+         COALESCE(bool_and(t.tgenabled = 'A'), false),
+         array_agg(t.tgname::text ORDER BY c.relname, t.tgname COLLATE "C")
+    INTO v_trigger_count, v_all_always_enabled, v_trigger_names
     FROM pg_trigger AS t
     JOIN pg_class AS c ON c.oid = t.tgrelid
     JOIN pg_namespace AS n ON n.oid = c.relnamespace
@@ -267,13 +281,15 @@ BEGIN
      AND c.relname IN ('LedgerEntry', 'LedgerTransaction')
      AND NOT t.tgisinternal;
 
-  IF v_trigger_count <> 8 OR NOT v_all_always_enabled THEN
+  IF v_trigger_count <> 9
+     OR NOT v_all_always_enabled
+     OR v_trigger_names <> v_expected_trigger_names THEN
     RAISE EXCEPTION
-      'FAIL: expected 8 non-internal ledger triggers all enabled ALWAYS; found % triggers, all_always_enabled=%',
-      v_trigger_count, v_all_always_enabled;
+      'FAIL: expected exact 9 non-internal ledger triggers all enabled ALWAYS; found %, all_always_enabled=%, names=%',
+      v_trigger_count, v_all_always_enabled, v_trigger_names;
   END IF;
 
-  RAISE NOTICE 'PASS: all 8 non-internal ledger triggers remain enabled ALWAYS';
+  RAISE NOTICE 'PASS: exact 9-trigger inventory is present and all remain enabled ALWAYS';
 END
 $test$;
 

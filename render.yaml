@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: balancevault
+    runtime: node
+    buildCommand: npm ci --prefix backend && npm ci --prefix frontend && npm run build --prefix frontend
+    startCommand: npm start --prefix backend
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_ORIGINS
+        sync: false
+      - key: CSRF_SECRET
+        generateValue: true

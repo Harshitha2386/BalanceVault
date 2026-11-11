@@ -2,16 +2,31 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "src/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "dev": "node --watch --env-file-if-exists=.env src/server.js",
+    "test": "node --test",
+    "db:auth-preflight": "node --env-file-if-exists=.env scripts/auth-db-preflight.js",
+    "db:auth-integration": "node --env-file-if-exists=.env scripts/auth-integration.js",
+    "db:onboarding-integration": "node --env-file-if-exists=.env scripts/onboarding-integration.js",
+    "db:account-integration": "node --env-file-if-exists=.env scripts/account-integration.js",
+    "db:ledger-integration": "node --env-file-if-exists=.env scripts/ledger-integration.js",
+    "db:security-integration": "node --env-file-if-exists=.env scripts/security-integration.js",
+    "bootstrap:admin": "node --env-file-if-exists=.env scripts/bootstrap-admin.js",
+    "bootstrap:admin:preflight": "node --env-file-if-exists=.env scripts/bootstrap-admin.js --preflight"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "@prisma/client": "6.19.3",
+    "express": "5.3.0",
+    "helmet": "8.3.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
     "prisma": "6.19.3"
   }
 }

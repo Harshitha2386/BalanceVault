@@ -5,6 +5,21 @@
 
 \set ON_ERROR_STOP on
 
+\echo '=== SAFETY: require balancevault_test and postgres before any writes ==='
+DO $test$
+BEGIN
+  IF current_database() <> 'balancevault_test' THEN
+    RAISE EXCEPTION
+      'FAIL: this test must run against balancevault_test, not %',
+      current_database();
+  END IF;
+
+  IF current_user <> 'postgres' THEN
+    RAISE EXCEPTION 'FAIL: this test must run as postgres, not %', current_user;
+  END IF;
+END
+$test$;
+
 \echo '=== SETUP: generate isolated synthetic test IDs ==='
 CREATE TEMP TABLE bv_c2_posting_ids ON COMMIT PRESERVE ROWS AS
 SELECT
@@ -102,49 +117,98 @@ $test$;
 
 COMMIT;
 
-\echo '=== T03 unbalanced posting is rejected by the deferred commit-time check ==='
-BEGIN;
+\echo '=== T03 deferred balance constraint rejects unbalanced posting with check_violation ==='
+DO $test$
+DECLARE
+  v_tx uuid;
+  v_account_a uuid;
+  v_account_b uuid;
+  v_sqlstate text;
+  v_message text;
+  v_rejected boolean := false;
+BEGIN
+  SELECT tx_unbalanced, account_a, account_b
+    INTO v_tx, v_account_a, v_account_b
+    FROM pg_temp.bv_c2_posting_ids;
 
-INSERT INTO "LedgerTransaction" ("id", "reference", "type")
-SELECT tx_unbalanced, 'C2-UNBALANCED-' || tx_unbalanced::text,
-       'TRANSFER'::"LedgerTransactionType"
-FROM pg_temp.bv_c2_posting_ids;
+  BEGIN
+    INSERT INTO "LedgerTransaction" ("id", "reference", "type")
+    VALUES (
+      v_tx,
+      'C2-UNBALANCED-' || v_tx::text,
+      'TRANSFER'::"LedgerTransactionType"
+    );
 
-INSERT INTO "LedgerEntry" ("transactionId", "accountId", "direction", "amountMinor")
-SELECT tx_unbalanced, account_a, 'DEBIT'::"EntryDirection", 1000
-FROM pg_temp.bv_c2_posting_ids;
+    INSERT INTO "LedgerEntry" ("transactionId", "accountId", "direction", "amountMinor")
+    VALUES
+      (v_tx, v_account_a, 'DEBIT'::"EntryDirection", 1000),
+      (v_tx, v_account_b, 'CREDIT'::"EntryDirection", 900);
 
-INSERT INTO "LedgerEntry" ("transactionId", "accountId", "direction", "amountMinor")
-SELECT tx_unbalanced, account_b, 'CREDIT'::"EntryDirection", 900
-FROM pg_temp.bv_c2_posting_ids;
+    SET CONSTRAINTS ALL IMMEDIATE;
+    RAISE EXCEPTION 'FAIL: unbalanced posting passed deferred validation';
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS
+      v_sqlstate = RETURNED_SQLSTATE,
+      v_message = MESSAGE_TEXT;
 
-\set ON_ERROR_STOP off
-COMMIT;
-\if :ERROR
-  \echo 'PASS: COMMIT rejected the unbalanced posting'
-\else
-  \echo 'FAIL: COMMIT accepted the unbalanced posting'
-  \quit 1
-\endif
-\set ON_ERROR_STOP on
+    IF v_sqlstate <> '23514'
+       OR position('is unbalanced' IN v_message) = 0 THEN
+      RAISE EXCEPTION
+        'FAIL: unbalanced posting failed for an unexpected reason: SQLSTATE %, message %',
+        v_sqlstate, v_message;
+    END IF;
+    v_rejected := true;
+  END;
 
-\echo '=== T04 header with no entries is rejected by the deferred commit-time check ==='
-BEGIN;
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'FAIL: unbalanced posting was not rejected by the balance constraint';
+  END IF;
+  RAISE NOTICE 'PASS: deferred balance constraint rejected the unbalanced posting';
+END
+$test$;
 
-INSERT INTO "LedgerTransaction" ("id", "reference", "type")
-SELECT tx_empty_header, 'C2-EMPTY-' || tx_empty_header::text,
-       'TRANSFER'::"LedgerTransactionType"
-FROM pg_temp.bv_c2_posting_ids;
+\echo '=== T04 deferred entry-count constraint rejects an empty header with check_violation ==='
+DO $test$
+DECLARE
+  v_tx uuid;
+  v_sqlstate text;
+  v_message text;
+  v_rejected boolean := false;
+BEGIN
+  SELECT tx_empty_header
+    INTO v_tx
+    FROM pg_temp.bv_c2_posting_ids;
 
-\set ON_ERROR_STOP off
-COMMIT;
-\if :ERROR
-  \echo 'PASS: COMMIT rejected a header with no entries'
-\else
-  \echo 'FAIL: COMMIT accepted a header with no entries'
-  \quit 1
-\endif
-\set ON_ERROR_STOP on
+  BEGIN
+    INSERT INTO "LedgerTransaction" ("id", "reference", "type")
+    VALUES (
+      v_tx,
+      'C2-EMPTY-' || v_tx::text,
+      'TRANSFER'::"LedgerTransactionType"
+    );
+
+    SET CONSTRAINTS ALL IMMEDIATE;
+    RAISE EXCEPTION 'FAIL: empty ledger header passed deferred validation';
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS
+      v_sqlstate = RETURNED_SQLSTATE,
+      v_message = MESSAGE_TEXT;
+
+    IF v_sqlstate <> '23514'
+       OR position('needs at least 2 entries' IN v_message) = 0 THEN
+      RAISE EXCEPTION
+        'FAIL: empty header failed for an unexpected reason: SQLSTATE %, message %',
+        v_sqlstate, v_message;
+    END IF;
+    v_rejected := true;
+  END;
+
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'FAIL: empty header was not rejected by the entry-count constraint';
+  END IF;
+  RAISE NOTICE 'PASS: deferred entry-count constraint rejected the empty header';
+END
+$test$;
 
 \echo '=== T05 entry for a nonexistent header is rejected ==='
 BEGIN;
@@ -328,7 +392,7 @@ BEGIN
 END
 $test$;
 
-\echo '=== T11 ledger trigger inventory: EXPECT 8 rows and all tgenabled = A ==='
+\echo '=== T11 ledger trigger inventory: EXPECT the exact 9 rows and all tgenabled = A ==='
 SELECT c.relname AS table_name, t.tgname AS trigger_name, t.tgenabled
 FROM pg_trigger AS t
 JOIN pg_class AS c ON c.oid = t.tgrelid
@@ -342,9 +406,23 @@ DO $test$
 DECLARE
   v_trigger_count bigint;
   v_all_always_enabled boolean;
+  v_trigger_names text[];
+  v_expected_trigger_names text[] := ARRAY[
+    'LedgerEntry_append_only_row',
+    'LedgerEntry_append_only_truncate',
+    'LedgerEntry_balance_cache',
+    'LedgerEntry_balanced',
+    'LedgerEntry_posting_window',
+    'LedgerTransaction_append_only_row',
+    'LedgerTransaction_append_only_truncate',
+    'LedgerTransaction_has_entries',
+    'LedgerTransaction_stamp_posting_txid'
+  ];
 BEGIN
-  SELECT count(*), COALESCE(bool_and(t.tgenabled = 'A'), false)
-    INTO v_trigger_count, v_all_always_enabled
+  SELECT count(*),
+         COALESCE(bool_and(t.tgenabled = 'A'), false),
+         array_agg(t.tgname::text ORDER BY c.relname, t.tgname COLLATE "C")
+    INTO v_trigger_count, v_all_always_enabled, v_trigger_names
     FROM pg_trigger AS t
     JOIN pg_class AS c ON c.oid = t.tgrelid
     JOIN pg_namespace AS n ON n.oid = c.relnamespace
@@ -352,13 +430,15 @@ BEGIN
      AND c.relname IN ('LedgerEntry', 'LedgerTransaction')
      AND NOT t.tgisinternal;
 
-  IF v_trigger_count <> 8 OR NOT v_all_always_enabled THEN
+  IF v_trigger_count <> 9
+     OR NOT v_all_always_enabled
+     OR v_trigger_names <> v_expected_trigger_names THEN
     RAISE EXCEPTION
-      'FAIL: expected 8 non-internal ledger triggers all enabled ALWAYS; found % triggers, all_always_enabled=%',
-      v_trigger_count, v_all_always_enabled;
+      'FAIL: expected exact 9 non-internal ledger triggers all enabled ALWAYS; found %, all_always_enabled=%, names=%',
+      v_trigger_count, v_all_always_enabled, v_trigger_names;
   END IF;
 
-  RAISE NOTICE 'PASS: all 8 non-internal ledger triggers are enabled ALWAYS';
+  RAISE NOTICE 'PASS: exact 9-trigger inventory is present and all are enabled ALWAYS';
 END
 $test$;
 

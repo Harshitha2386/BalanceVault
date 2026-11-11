@@ -57,7 +57,8 @@ ON "OnboardingApplication" TO bv_app;
 -- ACCOUNT
 -- No direct balance updates.
 -- CUSTOMER and ACTIVE are database defaults.
--- SYSTEM accounts must be provisioned separately.
+-- SYSTEM accounts must be provisioned separately. The Account update trigger
+-- rejects bv_app updates to SYSTEM rows while preserving customer status changes.
 -- -------------------------------------------------------
 
 GRANT SELECT ON "Account" TO bv_app;
