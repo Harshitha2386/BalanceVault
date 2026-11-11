@@ -76,8 +76,8 @@ ON "Account" TO bv_app;
 -- Sessions require normal lifecycle operations.
 -- -------------------------------------------------------
 
-GRANT SELECT, INSERT, UPDATE, DELETE
-ON "Session" TO bv_app;
+GRANT SELECT, INSERT, DELETE ON "Session" TO bv_app;
+GRANT UPDATE ("lastSeenAt", "revokedAt") ON "Session" TO bv_app;
 
 -- -------------------------------------------------------
 -- LEDGER AND AUDIT
