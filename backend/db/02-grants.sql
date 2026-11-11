@@ -1,6 +1,5 @@
-
 -- BalanceVault: least-privilege application grants
--- Run as postgres against balancevault_dev.
+-- Run as postgres against each database (dev and test).
 -- The application role must never own these tables.
 
 GRANT USAGE ON SCHEMA public TO bv_app;
@@ -11,7 +10,8 @@ REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM bv_app;
 
 -- -------------------------------------------------------
 -- USER
--- No permission to insert or update role/status.
+-- No permission to insert or update the role column.
+-- User status can be updated for account activation/deactivation.
 -- Defaults create ACCOUNT_HOLDER users.
 -- -------------------------------------------------------
 
@@ -25,6 +25,7 @@ ON "User" TO bv_app;
 GRANT UPDATE (
   "fullName",
   "passwordHash",
+  "status",
   "mustChangePassword",
   "failedLoginCount",
   "lockedUntil",
@@ -74,10 +75,14 @@ ON "Account" TO bv_app;
 -- -------------------------------------------------------
 -- SESSION
 -- Sessions require normal lifecycle operations.
+-- Updates are restricted to activity and revocation.
 -- -------------------------------------------------------
 
-GRANT SELECT, INSERT, DELETE ON "Session" TO bv_app;
-GRANT UPDATE ("lastSeenAt", "revokedAt") ON "Session" TO bv_app;
+GRANT SELECT, INSERT, DELETE
+ON "Session" TO bv_app;
+
+GRANT UPDATE ("lastSeenAt", "revokedAt")
+ON "Session" TO bv_app;
 
 -- -------------------------------------------------------
 -- LEDGER AND AUDIT

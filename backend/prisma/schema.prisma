@@ -1,6 +1,7 @@
+
 // BalanceVault database schema (Prisma 6)
-// Constraints Prisma cannot express (CHECKs, triggers, partial indexes, DB roles)
-// are added in a hand-written SQL migration in the next part.
+// PostgreSQL constraints, triggers and database roles
+// are maintained through SQL migrations.
 
 generator client {
   provider = "prisma-client-js"
@@ -62,7 +63,7 @@ enum AuditOutcome {
 
 model User {
   id                 String     @id @default(uuid()) @db.Uuid
-  email              String     @unique // stored lowercase; enforced in app + DB CHECK
+  email              String     @unique
   fullName           String
   passwordHash       String
   role               Role       @default(ACCOUNT_HOLDER)
@@ -81,6 +82,8 @@ model User {
   auditLogs            AuditLog[]
   idempotencyRecords   IdempotencyRecord[]
 }
+
+// ---------- Sessions ----------
 
 model Session {
   id         String    @id @default(uuid()) @db.Uuid
@@ -130,10 +133,12 @@ model Account {
   kind          AccountKind   @default(CUSTOMER)
   status        AccountStatus @default(ACTIVE)
   currency      String        @default("INR") @db.Char(3)
-  // CACHE of (sum of credits - sum of debits) in minor units (paise).
-  // The ledger entries are the source of truth.
+
+  // Cached balance in minor units (paise).
+  // Ledger entries remain the source of truth.
   balanceMinor  BigInt        @default(0)
-  ownerId       String?       @unique @db.Uuid // one account per user (simplification); null for SYSTEM accounts
+
+  ownerId       String?       @unique @db.Uuid
   owner         User?         @relation(fields: [ownerId], references: [id])
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
@@ -151,6 +156,11 @@ model LedgerTransaction {
   reversesId  String?               @unique @db.Uuid
   reverses    LedgerTransaction?    @relation("Reversal", fields: [reversesId], references: [id])
   reversedBy  LedgerTransaction?    @relation("Reversal")
+
+  // Database trigger stamps the creating PostgreSQL transaction ID.
+  // Ledger entries can only be inserted in that same DB transaction.
+  postedTxid  String                @default("0") @db.VarChar(20)
+
   createdAt   DateTime              @default(now())
 
   entries           LedgerEntry[]
@@ -166,7 +176,7 @@ model LedgerEntry {
   accountId     String            @db.Uuid
   account       Account           @relation(fields: [accountId], references: [id])
   direction     EntryDirection
-  amountMinor   BigInt // always > 0 (CHECK added in SQL migration); direction carries the sign
+  amountMinor   BigInt
   createdAt     DateTime          @default(now())
 
   @@index([accountId, id])
