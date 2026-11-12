@@ -12,20 +12,6 @@ function getPrismaClient(databaseUrl) {
       datasources: {
         db: { url: databaseUrl },
       },
-      log: [{ emit: 'event', level: 'query' }],
-    });
-
-    prisma.$on('query', (event) => {
-      if (
-        event.query.includes('"Session"') &&
-        event.query.trimStart().startsWith('INSERT')
-      ) {
-        console.log(JSON.stringify({
-          level: 'debug',
-          event: 'prisma_session_insert_query',
-          query: event.query,
-        }));
-      }
     });
   }
 
