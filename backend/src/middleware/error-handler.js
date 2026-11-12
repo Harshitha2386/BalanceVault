@@ -1,3 +1,5 @@
+import { formatRequestFailure } from '../error-diagnostics.js';
+
 class AppError extends Error {
   constructor(status, code, message) {
     super(message);
@@ -36,11 +38,7 @@ function errorHandler(error, req, res, next) {
   }
 
   if (status === 500) {
-    console.error(JSON.stringify({
-      level: 'error',
-      event: 'request_failed',
-      requestId: req.requestId,
-    }));
+    console.error(JSON.stringify(formatRequestFailure(error, req.requestId)));
   }
 
   res.status(status).json({

@@ -129,6 +129,56 @@ test('duplicate registration is rejected without creating another user', async (
   });
 });
 
+test('registration database failures stay generic to clients and log safe Prisma diagnostics', async () => {
+  await withAuthServer(async ({ baseUrl, prisma }) => {
+    prisma.$queryRaw = async () => {
+      const error = new Error(
+        'permission denied for table "User"; password=private-password; '
+        + 'token=private-token; email=holder@example.test',
+      );
+      error.name = 'PrismaClientKnownRequestError';
+      error.code = 'P2010';
+      error.meta = { code: '42501' };
+      throw error;
+    };
+
+    const csrf = await fetchCsrf(baseUrl);
+    const loggedErrors = [];
+    const originalConsoleError = console.error;
+    console.error = (message) => loggedErrors.push(message);
+
+    try {
+      const response = await authRequest(baseUrl, 'register', {
+        body: {
+          email: 'holder@example.test',
+          fullName: 'Synthetic Account Holder',
+          password: validPassword,
+        },
+        csrfToken: csrf.token,
+        cookies: [`bv_csrf=${csrf.csrfCookie}`],
+      });
+      const body = await response.json();
+
+      assert.equal(response.status, 500);
+      assert.equal(body.error.code, 'INTERNAL_ERROR');
+      assert.equal(body.error.message, 'An unexpected error occurred.');
+
+      const diagnostic = JSON.parse(loggedErrors[0]);
+      assert.equal(diagnostic.event, 'request_failed');
+      assert.equal(diagnostic.requestId, body.error.requestId);
+      assert.equal(diagnostic.prismaCode, 'P2010');
+      assert.equal(diagnostic.databaseCode, '42501');
+      assert.match(diagnostic.errorMessage, /permission denied for table "User"/);
+      assert.doesNotMatch(
+        JSON.stringify(diagnostic),
+        /private-password|private-token|holder@example\.test/,
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+});
+
 test('registration rejects invalid email and weak password', async () => {
   await withAuthServer(async ({ baseUrl, prisma }) => {
     const badEmail = await register(baseUrl, 'not-an-email');

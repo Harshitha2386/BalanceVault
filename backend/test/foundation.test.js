@@ -213,24 +213,56 @@ test('startup diagnostics include useful details without exposing secrets', () =
   );
 });
 
-test('error handler returns a generic response without exception details', async () => {
+test('error handler logs safe Prisma diagnostics and returns a generic response', async () => {
   const app = express();
   app.use(requestIdMiddleware);
   app.get('/failure', () => {
-    throw new Error('sensitive stack or connection detail');
+    const error = new Error(
+      'permission denied for table "AuditLog"; password=private-password; '
+      + 'token=private-token; user=alice@example.test; '
+      + 'postgresql://runtime:private-db-password@db.example.test/balancevault',
+    );
+    error.name = 'PrismaClientKnownRequestError';
+    error.code = 'P2010';
+    error.meta = { code: '42501' };
+    throw error;
   });
   app.use(errorHandler);
 
-  await withServer(app, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/failure`);
-    const body = await response.json();
-    const serialized = JSON.stringify(body);
+  const loggedErrors = [];
+  const originalConsoleError = console.error;
+  console.error = (message) => loggedErrors.push(message);
 
-    assert.equal(response.status, 500);
-    assert.equal(body.error.code, 'INTERNAL_ERROR');
-    assert.equal(serialized.includes('sensitive stack or connection detail'), false);
-    assert.equal(serialized.includes('stack'), false);
-  });
+  try {
+    await withServer(app, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/failure`);
+      const body = await response.json();
+      const serialized = JSON.stringify(body);
+
+      assert.equal(response.status, 500);
+      assert.equal(body.error.code, 'INTERNAL_ERROR');
+      assert.equal(serialized.includes('private-password'), false);
+      assert.equal(serialized.includes('private-token'), false);
+      assert.equal(serialized.includes('alice@example.test'), false);
+      assert.equal(serialized.includes('stack'), false);
+
+      const diagnostic = JSON.parse(loggedErrors[0]);
+      assert.equal(diagnostic.event, 'request_failed');
+      assert.equal(diagnostic.requestId, body.error.requestId);
+      assert.equal(diagnostic.errorName, 'PrismaClientKnownRequestError');
+      assert.equal(diagnostic.prismaCode, 'P2010');
+      assert.equal(diagnostic.databaseCode, '42501');
+      assert.match(diagnostic.errorMessage, /permission denied for table "AuditLog"/);
+      const logged = JSON.stringify(diagnostic);
+      assert.doesNotMatch(
+        logged,
+        /private-password|private-token|alice@example\.test|private-db-password|postgresql:\/\//,
+      );
+      assert.doesNotMatch(logged, /stack|cookie|requestBody/);
+    });
+  } finally {
+    console.error = originalConsoleError;
+  }
 });
 
 test('JSON parser rejects malformed and oversized request bodies', async () => {
