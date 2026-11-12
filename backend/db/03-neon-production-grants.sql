@@ -351,9 +351,12 @@ GRANT SELECT (
   "id", "actorId", "action", "targetType", "targetId",
   "outcome", "metadata", "createdAt"
 ) ON TABLE public."AuditLog" TO bv_app;
+
+-- Prisma may include generated/defaulted columns in its INSERT target list.
+-- Keep the grant column-scoped rather than granting table-wide INSERT.
 GRANT INSERT (
-  "actorId", "action", "targetType", "targetId", "outcome",
-  "requestId", "ipAddress", "metadata"
+  "id", "actorId", "action", "targetType", "targetId", "outcome",
+  "requestId", "ipAddress", "metadata", "createdAt"
 ) ON TABLE public."AuditLog" TO bv_app;
 
 GRANT USAGE ON SEQUENCE
@@ -384,6 +387,7 @@ BEGIN
   END IF;
 
   IF NOT has_column_privilege('bv_app', 'public."AuditLog"', 'id', 'SELECT')
+     OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'id', 'INSERT')
      OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'actorId', 'INSERT')
      OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'action', 'INSERT')
      OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'targetType', 'INSERT')
@@ -392,6 +396,7 @@ BEGIN
      OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'requestId', 'INSERT')
      OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'ipAddress', 'INSERT')
      OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'metadata', 'INSERT')
+     OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'createdAt', 'INSERT')
      OR NOT has_sequence_privilege('bv_app', 'public."AuditLog_id_seq"', 'USAGE') THEN
     RAISE EXCEPTION 'bv_app is missing an AuditLog INSERT column, returned-id SELECT, or sequence USAGE privilege';
   END IF;
