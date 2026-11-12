@@ -137,6 +137,11 @@ BEGIN
     RAISE EXCEPTION 'Application tables and runtime sequences must be owned by neondb_owner';
   END IF;
 
+  IF to_regclass('public."AuditLog"') IS NULL
+     OR to_regclass('public."AuditLog_id_seq"') IS NULL THEN
+    RAISE EXCEPTION 'AuditLog and its generated-id sequence must exist before applying runtime grants';
+  END IF;
+
   SELECT relowner
     INTO v_account_owner
     FROM pg_class
@@ -369,8 +374,26 @@ TO bv_app;
 
 DO $postflight$
 BEGIN
+  IF NOT has_database_privilege('bv_app', current_database(), 'CONNECT')
+     OR NOT has_schema_privilege('bv_app', 'public', 'USAGE') THEN
+    RAISE EXCEPTION 'bv_app must have CONNECT on this database and USAGE on schema public';
+  END IF;
+
   IF has_schema_privilege('bv_app', 'public', 'CREATE') THEN
     RAISE EXCEPTION 'bv_app must not have CREATE on schema public';
+  END IF;
+
+  IF NOT has_column_privilege('bv_app', 'public."AuditLog"', 'id', 'SELECT')
+     OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'actorId', 'INSERT')
+     OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'action', 'INSERT')
+     OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'targetType', 'INSERT')
+     OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'targetId', 'INSERT')
+     OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'outcome', 'INSERT')
+     OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'requestId', 'INSERT')
+     OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'ipAddress', 'INSERT')
+     OR NOT has_column_privilege('bv_app', 'public."AuditLog"', 'metadata', 'INSERT')
+     OR NOT has_sequence_privilege('bv_app', 'public."AuditLog_id_seq"', 'USAGE') THEN
+    RAISE EXCEPTION 'bv_app is missing an AuditLog INSERT column, returned-id SELECT, or sequence USAGE privilege';
   END IF;
 
   IF has_table_privilege('bv_app', 'public."LedgerTransaction"', 'UPDATE')

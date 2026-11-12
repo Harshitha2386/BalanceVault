@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -285,6 +285,44 @@ test('JSON parser rejects malformed and oversized request bodies', async () => {
     assert.equal(oversized.status, 413);
     assert.equal((await oversized.json()).error.code, 'PAYLOAD_TOO_LARGE');
   });
+});
+
+test('Neon grants cover Prisma AuditLog creates without granting mutation privileges', async () => {
+  const grants = await readFile(
+    new URL('../db/03-neon-production-grants.sql', import.meta.url),
+    'utf8',
+  );
+  const insertGrant = grants.split(';').find(
+    (statement) => /^\s*GRANT INSERT/.test(statement)
+      && /ON TABLE public\."AuditLog" TO bv_app/.test(statement),
+  );
+
+  assert.ok(insertGrant, 'AuditLog must use a column-scoped INSERT grant');
+  assert.deepEqual(
+    [...insertGrant.match(/GRANT INSERT\s*\(([\s\S]*?)\)\s*ON TABLE public\."AuditLog"/)[1]
+      .matchAll(/"([^"]+)"/g)].map((match) => match[1]),
+    [
+      'actorId', 'action', 'targetType', 'targetId', 'outcome',
+      'requestId', 'ipAddress', 'metadata',
+    ],
+  );
+  for (const column of [
+    'actorId', 'action', 'targetType', 'targetId',
+    'outcome', 'requestId', 'ipAddress', 'metadata',
+  ]) {
+    assert.ok(
+      grants.includes(`has_column_privilege('bv_app', 'public."AuditLog"', '${column}', 'INSERT')`),
+      `postflight must verify AuditLog.${column} INSERT`,
+    );
+  }
+  assert.match(grants, /has_column_privilege\('bv_app', 'public\."AuditLog"', 'id', 'SELECT'\)/);
+  assert.match(grants, /has_sequence_privilege\('bv_app', 'public\."AuditLog_id_seq"', 'USAGE'\)/);
+  assert.match(grants, /has_database_privilege\('bv_app', current_database\(\), 'CONNECT'\)/);
+  assert.match(grants, /has_schema_privilege\('bv_app', 'public', 'USAGE'\)/);
+  assert.doesNotMatch(grants, /GRANT INSERT\s+ON TABLE public\."AuditLog"/);
+  assert.match(grants, /has_table_privilege\('bv_app', 'public\."AuditLog"', 'UPDATE'\)/);
+  assert.match(grants, /has_table_privilege\('bv_app', 'public\."AuditLog"', 'DELETE'\)/);
+  assert.match(grants, /has_table_privilege\('bv_app', 'public\."AuditLog"', 'TRUNCATE'\)/);
 });
 
 test('graceful shutdown closes HTTP before disconnecting Prisma once', async () => {
