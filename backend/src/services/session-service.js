@@ -24,7 +24,15 @@ async function resolveSession(req, prisma, { touch = false } = {}) {
 
   const session = await prisma.session.findUnique({
     where: { tokenHash: hashSessionToken(rawToken) },
-    include: { user: { select: safeUserSelect } },
+    select: {
+      id: true,
+      userId: true,
+      createdAt: true,
+      lastSeenAt: true,
+      expiresAt: true,
+      revokedAt: true,
+      user: { select: safeUserSelect },
+    },
   });
   if (!session) {
     return null;

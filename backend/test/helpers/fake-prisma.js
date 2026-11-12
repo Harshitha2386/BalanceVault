@@ -85,10 +85,21 @@ class FakePrisma {
     };
 
     this.session = {
-      findUnique: async ({ where, include }) => {
+      findUnique: async ({ where, include, select }) => {
         const row = [...this.sessions.values()].find((session) => matchesWhere(session, where));
         if (!row) {
           return null;
+        }
+        if (select) {
+          const scalarSelection = Object.fromEntries(
+            Object.entries(select).filter(([key, value]) => key !== 'user' && value === true),
+          );
+          const result = selectFields(row, scalarSelection);
+          if (select.user?.select) {
+            const user = this.users.get(row.userId);
+            result.user = user ? selectFields(user, select.user.select) : null;
+          }
+          return result;
         }
         const result = clone(row);
         if (include?.user) {

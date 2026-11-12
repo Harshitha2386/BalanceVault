@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import test from 'node:test';
 import { hashPassword, verifyPassword } from '../src/auth/password.js';
 import { hashSessionToken } from '../src/auth/token.js';
+import { resolveSession } from '../src/services/session-service.js';
 import {
   TEST_ORIGIN,
   authRequest,
@@ -12,6 +13,55 @@ import {
 } from './helpers/auth-test-app.js';
 
 const validPassword = 'Strong-Password-947!';
+
+test('session resolution selects only the session fields used by runtime', async () => {
+  const token = randomBytes(32).toString('base64url');
+  const now = new Date();
+  let query;
+  const session = {
+    id: 'session-id',
+    userId: 'user-id',
+    createdAt: now,
+    lastSeenAt: now,
+    expiresAt: new Date(now.getTime() + 60_000),
+    revokedAt: null,
+    user: {
+      id: 'user-id',
+      email: 'holder@example.test',
+      fullName: 'Synthetic Account Holder',
+      role: 'ACCOUNT_HOLDER',
+      status: 'ACTIVE',
+      mustChangePassword: false,
+      createdAt: now,
+    },
+  };
+
+  const result = await resolveSession(
+    { headers: { cookie: `bv_session=${token}` } },
+    {
+      session: {
+        findUnique: async (args) => {
+          query = args;
+          return session;
+        },
+      },
+    },
+  );
+
+  assert.equal(result, session);
+  assert.deepEqual(Object.keys(query.select).sort(), [
+    'createdAt',
+    'expiresAt',
+    'id',
+    'lastSeenAt',
+    'revokedAt',
+    'user',
+    'userId',
+  ]);
+  assert.equal(Object.hasOwn(query.select, 'ipAddress'), false);
+  assert.equal(Object.hasOwn(query.select, 'tokenHash'), false);
+  assert.equal(Object.hasOwn(query.select, 'userAgent'), false);
+});
 
 async function postWithCsrf(baseUrl, path, body, {
   cookies = [],
