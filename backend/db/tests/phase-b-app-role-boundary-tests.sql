@@ -164,20 +164,24 @@ DO $test$
 DECLARE
   v_is_security_definer boolean;
   v_owner name;
+  v_account_owner name;
   v_config text[];
 BEGIN
-  SELECT p.prosecdef, r.rolname, p.proconfig
-    INTO v_is_security_definer, v_owner, v_config
+  SELECT p.prosecdef, r.rolname, p.proconfig, account_owner.rolname
+    INTO v_is_security_definer, v_owner, v_config, v_account_owner
     FROM pg_proc AS p
     JOIN pg_namespace AS n ON n.oid = p.pronamespace
     JOIN pg_roles AS r ON r.oid = p.proowner
+    JOIN pg_class AS account ON account.oid = 'public."Account"'::regclass
+    JOIN pg_roles AS account_owner ON account_owner.oid = account.relowner
    WHERE n.nspname = 'public'
      AND p.proname = 'bv_update_account_balance_from_ledger'
      AND p.pronargs = 0;
 
   IF NOT FOUND
      OR NOT v_is_security_definer
-     OR v_owner <> 'postgres'
+     OR v_owner IS DISTINCT FROM v_account_owner
+     OR NOT has_table_privilege(v_owner, 'public."Account"', 'UPDATE')
      OR NOT (
        'search_path=pg_catalog' = ANY(COALESCE(v_config, ARRAY[]::text[]))
      )
@@ -199,15 +203,18 @@ DO $test$
 DECLARE
   v_is_security_definer boolean;
   v_function_owner name;
+  v_account_owner name;
   v_search_path text[];
   v_trigger_count bigint;
   v_guard_enabled boolean;
 BEGIN
-  SELECT p.prosecdef, r.rolname, p.proconfig
-    INTO v_is_security_definer, v_function_owner, v_search_path
+  SELECT p.prosecdef, r.rolname, p.proconfig, account_owner.rolname
+    INTO v_is_security_definer, v_function_owner, v_search_path, v_account_owner
     FROM pg_proc AS p
     JOIN pg_namespace AS n ON n.oid = p.pronamespace
     JOIN pg_roles AS r ON r.oid = p.proowner
+    JOIN pg_class AS account ON account.oid = 'public."Account"'::regclass
+    JOIN pg_roles AS account_owner ON account_owner.oid = account.relowner
    WHERE n.nspname = 'public'
      AND p.proname = 'bv_reject_system_account_app_updates'
      AND p.pronargs = 0;
@@ -223,8 +230,13 @@ BEGIN
      AND NOT t.tgisinternal;
 
   IF v_is_security_definer IS DISTINCT FROM false
-     OR v_function_owner <> 'postgres'
+     OR v_function_owner IS DISTINCT FROM v_account_owner
      OR NOT ('search_path=pg_catalog' = ANY(COALESCE(v_search_path, ARRAY[]::text[])))
+     OR has_function_privilege(
+       'bv_app',
+       'public.bv_reject_system_account_app_updates()',
+       'EXECUTE'
+     )
      OR v_trigger_count <> 1
      OR NOT v_guard_enabled THEN
     RAISE EXCEPTION

@@ -32,7 +32,6 @@ BEGIN
 END;
 $function$;
 
-ALTER FUNCTION public.bv_update_account_balance_from_ledger() OWNER TO postgres;
 REVOKE ALL ON FUNCTION public.bv_update_account_balance_from_ledger() FROM PUBLIC, bv_app;
 
 CREATE TRIGGER "LedgerEntry_balance_cache"

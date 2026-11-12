@@ -16,7 +16,6 @@ BEGIN
 END;
 $function$;
 
-ALTER FUNCTION public.bv_reject_system_account_app_updates() OWNER TO postgres;
 REVOKE ALL ON FUNCTION public.bv_reject_system_account_app_updates() FROM PUBLIC, bv_app;
 
 CREATE TRIGGER "Account_reject_app_system_update"
