@@ -7,6 +7,7 @@ import test from 'node:test';
 import express from 'express';
 import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
+import { runDatabaseDiagnosticsIfEnabled } from '../src/db-diagnostics.js';
 import { errorHandler } from '../src/middleware/error-handler.js';
 import { requestIdMiddleware } from '../src/middleware/request-id.js';
 import { createShutdownHandler, formatStartupError } from '../src/server.js';
@@ -188,6 +189,115 @@ test('configuration defaults are applied for optional settings', () => {
   assert.deepEqual(loadConfig({
     DATABASE_URL: 'postgresql://app:secret@localhost:5432/balancevault_test',
   }).allowedOrigins, ['http://localhost:5173']);
+});
+
+test('database diagnostics do not query or log unless explicitly enabled', async () => {
+  let queryCount = 0;
+  const logged = [];
+  const prisma = { $queryRaw: async () => { queryCount += 1; return []; } };
+  const log = (message) => logged.push(message);
+
+  assert.equal(await runDatabaseDiagnosticsIfEnabled(prisma, {}, log), false);
+  assert.equal(
+    await runDatabaseDiagnosticsIfEnabled(prisma, { DB_DIAGNOSTICS: 'TRUE' }, log),
+    false,
+  );
+  assert.equal(queryCount, 0);
+  assert.deepEqual(logged, []);
+});
+
+test('database diagnostics run one Prisma query and log only whitelisted identity and permissions', async () => {
+  let queryCount = 0;
+  let queryText;
+  const logged = [];
+  const row = {
+    databaseName: 'neondb',
+    sessionUser: 'bv_app',
+    currentUser: 'bv_app',
+    currentSchema: 'public',
+    searchPath: '$user, public',
+    auditLogActorIdInsert: true,
+    auditLogActionInsert: true,
+    auditLogTargetTypeInsert: true,
+    auditLogTargetIdInsert: true,
+    auditLogOutcomeInsert: true,
+    auditLogRequestIdInsert: true,
+    auditLogIpAddressInsert: true,
+    auditLogMetadataInsert: true,
+    auditLogIdSelect: true,
+    auditLogSequenceUsage: true,
+    unexpected: 'not-for-logging',
+  };
+  const prisma = {
+    $queryRaw: async (strings, ...values) => {
+      queryCount += 1;
+      queryText = strings.join('?');
+      assert.deepEqual(values, []);
+      return [row];
+    },
+  };
+  const log = (message) => logged.push(message);
+
+  assert.equal(
+    await runDatabaseDiagnosticsIfEnabled(prisma, {
+      DB_DIAGNOSTICS: 'true',
+      DATABASE_URL: 'postgresql://runtime:private-password@db.example.test/neondb',
+      DIRECT_URL: 'postgresql://owner:private-owner-password@db.example.test/neondb',
+    }, log),
+    true,
+  );
+  assert.equal(queryCount, 1);
+  assert.match(queryText.trimStart(), /^SELECT\b/);
+  assert.match(queryText, /current_database\(\)/);
+  assert.match(queryText, /session_user/);
+  assert.match(queryText, /current_user/);
+  assert.match(queryText, /current_schema\(\)/);
+  assert.match(queryText, /current_setting\('search_path'\)/);
+  for (const column of [
+    'actorId', 'action', 'targetType', 'targetId',
+    'outcome', 'requestId', 'ipAddress', 'metadata',
+  ]) {
+    assert.ok(queryText.includes(`'${column}', 'INSERT'`));
+  }
+  assert.ok(queryText.includes(`'id', 'SELECT'`));
+  assert.ok(queryText.includes(`'public."AuditLog_id_seq"', 'USAGE'`));
+  assert.equal(logged.length, 1);
+
+  const diagnostic = JSON.parse(logged[0]);
+  assert.deepEqual(Object.keys(diagnostic), [
+    'databaseName', 'sessionUser', 'currentUser', 'currentSchema', 'searchPath',
+    'auditLogActorIdInsert', 'auditLogActionInsert', 'auditLogTargetTypeInsert',
+    'auditLogTargetIdInsert', 'auditLogOutcomeInsert', 'auditLogRequestIdInsert',
+    'auditLogIpAddressInsert', 'auditLogMetadataInsert', 'auditLogIdSelect',
+    'auditLogSequenceUsage',
+  ]);
+  assert.equal(diagnostic.currentUser, 'bv_app');
+  assert.equal(diagnostic.auditLogSequenceUsage, true);
+  assert.doesNotMatch(
+    logged[0],
+    /private-password|private-owner-password|postgresql:\/\/|not-for-logging/,
+  );
+});
+
+test('database diagnostic query failures do not expose the database error', async () => {
+  const logged = [];
+  const prisma = {
+    $queryRaw: async () => {
+      throw new Error(
+        'permission denied; postgresql://runtime:private-password@db.example.test/neondb',
+      );
+    },
+  };
+
+  await assert.rejects(
+    runDatabaseDiagnosticsIfEnabled(
+      prisma,
+      { DB_DIAGNOSTICS: 'true' },
+      (message) => logged.push(message),
+    ),
+    { message: 'Database diagnostic query failed.' },
+  );
+  assert.deepEqual(logged, []);
 });
 
 test('startup diagnostics include useful details without exposing secrets', () => {

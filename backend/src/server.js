@@ -2,6 +2,7 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
+import { runDatabaseDiagnosticsIfEnabled } from './db-diagnostics.js';
 import { formatStartupError } from './error-diagnostics.js';
 import { getPrismaClient } from './prisma.js';
 
@@ -38,6 +39,7 @@ async function startServer() {
   const server = http.createServer(createApp({ prisma, config }));
 
   try {
+    await runDatabaseDiagnosticsIfEnabled(prisma);
     await new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(config.port, '0.0.0.0', resolve);
