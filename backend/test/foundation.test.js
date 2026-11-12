@@ -9,7 +9,7 @@ import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { errorHandler } from '../src/middleware/error-handler.js';
 import { requestIdMiddleware } from '../src/middleware/request-id.js';
-import { createShutdownHandler } from '../src/server.js';
+import { createShutdownHandler, formatStartupError } from '../src/server.js';
 
 const testConfig = {
   nodeEnv: 'test',
@@ -188,6 +188,29 @@ test('configuration defaults are applied for optional settings', () => {
   assert.deepEqual(loadConfig({
     DATABASE_URL: 'postgresql://app:secret@localhost:5432/balancevault_test',
   }).allowedOrigins, ['http://localhost:5173']);
+});
+
+test('startup diagnostics include useful details without exposing secrets', () => {
+  const error = new Error(
+    'Prisma failed for postgresql://runtime:db-password@db.example.test/balancevault'
+      + '; token=inline-token; csrf-key-secret',
+  );
+  error.name = 'PrismaClientInitializationError';
+  error.stack = `${error.name}: ${error.message}\n    at startServer (src/server.js:1:1)`;
+
+  const diagnostic = formatStartupError(error, {
+    DATABASE_URL: 'postgresql://runtime:configured-password@db.example.test/balancevault',
+    CSRF_SECRET: 'csrf-key-secret',
+  });
+  const serialized = JSON.stringify(diagnostic);
+
+  assert.equal(diagnostic.errorName, 'PrismaClientInitializationError');
+  assert.match(diagnostic.errorMessage, /Prisma failed/);
+  assert.match(diagnostic.stack, /at startServer/);
+  assert.doesNotMatch(
+    serialized,
+    /db-password|inline-token|csrf-key-secret|postgresql:\/\//,
+  );
 });
 
 test('error handler returns a generic response without exception details', async () => {
