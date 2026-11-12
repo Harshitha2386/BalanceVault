@@ -2,7 +2,7 @@ services:
   - type: web
     name: balancevault
     runtime: node
-    buildCommand: npm ci --prefix backend && npm ci --prefix frontend && npm run build --prefix frontend
+    buildCommand: npm ci --include=dev --prefix backend && npm run prisma:generate --prefix backend && npm ci --include=dev --prefix frontend && npm run build --prefix frontend
     startCommand: npm start --prefix backend
     healthCheckPath: /health
     envVars:

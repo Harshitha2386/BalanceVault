@@ -7,6 +7,7 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --watch --env-file-if-exists=.env src/server.js",
     "test": "node --test",
+    "prisma:generate": "prisma generate --schema=prisma/schema.prisma",
     "db:auth-preflight": "node --env-file-if-exists=.env scripts/auth-db-preflight.js",
     "db:auth-integration": "node --env-file-if-exists=.env scripts/auth-integration.js",
     "db:onboarding-integration": "node --env-file-if-exists=.env scripts/onboarding-integration.js",
