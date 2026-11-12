@@ -11,6 +11,7 @@ import { runDatabaseDiagnosticsIfEnabled } from '../src/db-diagnostics.js';
 import { errorHandler } from '../src/middleware/error-handler.js';
 import { requestIdMiddleware } from '../src/middleware/request-id.js';
 import { createShutdownHandler, formatStartupError } from '../src/server.js';
+import { recordAudit } from '../src/services/audit-service.js';
 
 const testConfig = {
   nodeEnv: 'test',
@@ -197,9 +198,12 @@ test('database diagnostics do not query or log unless explicitly enabled', async
   const prisma = { $queryRaw: async () => { queryCount += 1; return []; } };
   const log = (message) => logged.push(message);
 
-  assert.equal(await runDatabaseDiagnosticsIfEnabled(prisma, {}, log), false);
+  assert.equal(await runDatabaseDiagnosticsIfEnabled(prisma, { environment: {}, log }), false);
   assert.equal(
-    await runDatabaseDiagnosticsIfEnabled(prisma, { DB_DIAGNOSTICS: 'TRUE' }, log),
+    await runDatabaseDiagnosticsIfEnabled(prisma, {
+      environment: { DB_DIAGNOSTICS: 'TRUE' },
+      log,
+    }),
     false,
   );
   assert.equal(queryCount, 0);
@@ -216,6 +220,7 @@ test('database diagnostics run one Prisma query and log only whitelisted identit
     currentUser: 'bv_app',
     currentSchema: 'public',
     searchPath: '$user, public',
+    auditLogTableInsert: false,
     auditLogActorIdInsert: true,
     auditLogActionInsert: true,
     auditLogTargetTypeInsert: true,
@@ -240,10 +245,14 @@ test('database diagnostics run one Prisma query and log only whitelisted identit
 
   assert.equal(
     await runDatabaseDiagnosticsIfEnabled(prisma, {
-      DB_DIAGNOSTICS: 'true',
-      DATABASE_URL: 'postgresql://runtime:private-password@db.example.test/neondb',
-      DIRECT_URL: 'postgresql://owner:private-owner-password@db.example.test/neondb',
-    }, log),
+      environment: {
+        DB_DIAGNOSTICS: 'true',
+        DATABASE_URL: 'postgresql://runtime:private-password@db.example.test/neondb',
+        DIRECT_URL: 'postgresql://owner:private-owner-password@db.example.test/neondb',
+      },
+      log,
+      requestId: 'request-diagnostic-1',
+    }),
     true,
   );
   assert.equal(queryCount, 1);
@@ -261,17 +270,22 @@ test('database diagnostics run one Prisma query and log only whitelisted identit
   }
   assert.ok(queryText.includes(`'id', 'SELECT'`));
   assert.ok(queryText.includes(`'public."AuditLog_id_seq"', 'USAGE'`));
+  assert.ok(queryText.includes(`'public."AuditLog"', 'INSERT'`));
   assert.equal(logged.length, 1);
 
   const diagnostic = JSON.parse(logged[0]);
   assert.deepEqual(Object.keys(diagnostic), [
+    'requestId',
     'databaseName', 'sessionUser', 'currentUser', 'currentSchema', 'searchPath',
+    'auditLogTableInsert',
     'auditLogActorIdInsert', 'auditLogActionInsert', 'auditLogTargetTypeInsert',
     'auditLogTargetIdInsert', 'auditLogOutcomeInsert', 'auditLogRequestIdInsert',
     'auditLogIpAddressInsert', 'auditLogMetadataInsert', 'auditLogIdSelect',
     'auditLogSequenceUsage',
   ]);
+  assert.equal(diagnostic.requestId, 'request-diagnostic-1');
   assert.equal(diagnostic.currentUser, 'bv_app');
+  assert.equal(diagnostic.auditLogTableInsert, false);
   assert.equal(diagnostic.auditLogSequenceUsage, true);
   assert.doesNotMatch(
     logged[0],
@@ -290,14 +304,68 @@ test('database diagnostic query failures do not expose the database error', asyn
   };
 
   await assert.rejects(
-    runDatabaseDiagnosticsIfEnabled(
-      prisma,
-      { DB_DIAGNOSTICS: 'true' },
-      (message) => logged.push(message),
-    ),
+    runDatabaseDiagnosticsIfEnabled(prisma, {
+      environment: { DB_DIAGNOSTICS: 'true' },
+      log: (message) => logged.push(message),
+      requestId: 'request-diagnostic-2',
+    }),
     { message: 'Database diagnostic query failed.' },
   );
   assert.deepEqual(logged, []);
+});
+
+test('audit diagnostic runs on its transaction client immediately before the INSERT', async () => {
+  const previousFlag = process.env.DB_DIAGNOSTICS;
+  const logged = [];
+  const operations = [];
+  const originalConsoleLog = console.log;
+  const row = {
+    databaseName: 'neondb',
+    sessionUser: 'bv_app',
+    currentUser: 'bv_app',
+    currentSchema: 'public',
+    searchPath: '$user, public',
+    auditLogTableInsert: false,
+    auditLogActorIdInsert: true,
+    auditLogActionInsert: true,
+    auditLogTargetTypeInsert: true,
+    auditLogTargetIdInsert: true,
+    auditLogOutcomeInsert: true,
+    auditLogRequestIdInsert: true,
+    auditLogIpAddressInsert: true,
+    auditLogMetadataInsert: true,
+    auditLogIdSelect: true,
+    auditLogSequenceUsage: true,
+  };
+  const transactionClient = {
+    $queryRaw: async () => {
+      operations.push('permission-diagnostic');
+      return [row];
+    },
+    auditLog: {
+      create: async () => operations.push('audit-insert'),
+    },
+  };
+
+  process.env.DB_DIAGNOSTICS = 'true';
+  console.log = (message) => logged.push(message);
+  try {
+    await recordAudit(transactionClient, {
+      action: 'auth.register',
+      outcome: 'SUCCESS',
+      requestId: 'request-audit-1',
+    });
+  } finally {
+    console.log = originalConsoleLog;
+    if (previousFlag === undefined) {
+      delete process.env.DB_DIAGNOSTICS;
+    } else {
+      process.env.DB_DIAGNOSTICS = previousFlag;
+    }
+  }
+
+  assert.deepEqual(operations, ['permission-diagnostic', 'audit-insert']);
+  assert.equal(JSON.parse(logged[0]).requestId, 'request-audit-1');
 });
 
 test('startup diagnostics include useful details without exposing secrets', () => {

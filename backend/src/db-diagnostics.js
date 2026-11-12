@@ -1,10 +1,14 @@
-async function runDatabaseDiagnosticsIfEnabled(
-  prisma,
+async function runDatabaseDiagnosticsIfEnabled(prisma, {
   environment = process.env,
   log = console.log,
-) {
+  requestId,
+} = {}) {
   if (environment.DB_DIAGNOSTICS !== 'true') {
     return false;
+  }
+
+  if (requestId !== undefined && typeof requestId !== 'string') {
+    throw new Error('Database diagnostic request ID is invalid.');
   }
 
   let rows;
@@ -16,6 +20,7 @@ async function runDatabaseDiagnosticsIfEnabled(
         current_user AS "currentUser",
         current_schema() AS "currentSchema",
         current_setting('search_path') AS "searchPath",
+        has_table_privilege(current_user, 'public."AuditLog"', 'INSERT') AS "auditLogTableInsert",
         has_column_privilege(current_user, 'public."AuditLog"', 'actorId', 'INSERT') AS "auditLogActorIdInsert",
         has_column_privilege(current_user, 'public."AuditLog"', 'action', 'INSERT') AS "auditLogActionInsert",
         has_column_privilege(current_user, 'public."AuditLog"', 'targetType', 'INSERT') AS "auditLogTargetTypeInsert",
@@ -44,6 +49,7 @@ async function runDatabaseDiagnosticsIfEnabled(
     'searchPath',
   ];
   const permissionFields = [
+    'auditLogTableInsert',
     'auditLogActorIdInsert',
     'auditLogActionInsert',
     'auditLogTargetTypeInsert',
@@ -70,6 +76,7 @@ async function runDatabaseDiagnosticsIfEnabled(
   }
 
   const result = Object.fromEntries([
+    ...(requestId === undefined ? [] : [['requestId', requestId]]),
     ...identityFields.map((field) => [field, row[field]]),
     ...permissionFields.map((field) => [field, row[field]]),
   ]);

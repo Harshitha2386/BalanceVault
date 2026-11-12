@@ -1,3 +1,5 @@
+import { runDatabaseDiagnosticsIfEnabled } from '../db-diagnostics.js';
+
 const ALLOWED_METADATA_KEYS = new Set(['reasonCode']);
 
 function safeMetadata(metadata = {}) {
@@ -20,19 +22,21 @@ async function recordAudit(client, {
   targetId = null,
   metadata,
 }) {
-  await client.auditLog.create({
-    data: {
-      actorId,
-      action,
-      targetType,
-      targetId,
-      outcome,
-      requestId,
-      ipAddress,
-      metadata: safeMetadata(metadata),
-    },
-    select: { id: true },
-  });
+  const data = {
+    actorId,
+    action,
+    targetType,
+    targetId,
+    outcome,
+    requestId,
+    ipAddress,
+    metadata: safeMetadata(metadata),
+  };
+
+  if (action === 'auth.register') {
+    await runDatabaseDiagnosticsIfEnabled(client, { requestId });
+  }
+  await client.auditLog.create({ data, select: { id: true } });
 }
 
 export { recordAudit };
